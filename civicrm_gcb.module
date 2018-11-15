@@ -1,0 +1,185 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * CiviCRM Group Counter Block
+ */
+
+/**
+ * Provide a theme function for the block output
+ */
+function civicrm_gcb_theme() {
+  return array(
+    'civicrm_gcb_count' => array('variables' => array('count' => NULL)),
+  );
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function civicrm_gcb_block_info() {
+  $blocks['civicrm-gcb']['info'] = t('CiviCRM Group Counter');
+  $blocks['civicrm-gcb']['cache'] = DRUPAL_CACHE_GLOBAL;
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_configure().
+ */
+function civicrm_gcb_block_configure($delta) {
+  $form = array();
+  if ($delta == 'civicrm-gcb') {
+    $form['civicrm_gcb_add'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Add'),
+      '#description' => t('Add this number to the counter value'),
+      '#default_value' => variable_get('civicrm_gcb_add', 0),
+    );
+    $form['civicrm_gcb_start'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Start at'),
+      '#description' => t('Don\'t show the counter below this number'),
+      '#default_value' => variable_get('civicrm_gcb_start', 0),
+    );
+    $form['civicrm_gcb_string'] = array(
+      '#type' => 'textarea',
+      '#title' => t('Display'),
+      '#description' => t('Use this string for displaying the count, a multilingual variable.'),
+      '#default_value' => variable_get('civicrm_gcb_string', '!count'),
+    );
+    $options = civicrm_gcb_civicrm_groups();
+    $form['civicrm_gcb_id'] = array(
+      '#type' => 'select',
+      '#title' => t('CiviCRM Group'),
+      '#options' => $options,
+      '#description' => t('The group for which you want a counter'),
+      '#default_value' => variable_get('civicrm_gcb_id', 0),
+    );
+  }
+  return $form;
+}
+
+/**
+ * Implements hook_block_save().
+ */
+function civicrm_gcb_block_save($delta, $edit) {
+  if ($delta == 'civicrm-gcb') {
+    foreach (array('id', 'start', 'add', 'string') as $key) {
+      variable_set('civicrm_gcb_' . $key, $edit['civicrm_gcb_' . $key]);
+    }
+  }
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function civicrm_gcb_block_view($delta) {
+  if ($delta == 'civicrm-gcb') {
+    $id = variable_get('civicrm_gcb_id', 0);
+    $block = array('subject' => t('Counter'));
+    if ($id) {
+      $start = variable_get('civicrm_gcb_start', 0);
+      $count = variable_get('civicrm_gcb_add', 0);
+      $string = variable_get('civicrm_gcb_string', '!count');
+      $count += civicrm_gcb_civicrm_group_count($id);
+      if ($count > $start) {
+         $block['content'] = t($string, array('!count' => theme('civicrm_gcb_count', array('count' => $count))));
+      }
+    }
+  }
+  return $block;
+}
+
+/**
+ * Default theme function for output
+ */
+function theme_civicrm_gcb_count($variables) {
+  $count = $variables['count'];
+  return '<span class="first">' . implode('</span><span>', str_split('0' . "$count")) . '</span>';
+}
+
+/**
+ * Cover function for getting the count, dealing with caching and permissions
+ */
+function civicrm_gcb_civicrm_group_count($group_id) {
+  global $user;
+  $current = variable_get('civicrm_gcb_current_' . $group_id, 0);
+  if (!$user->uid) {
+    return $current;
+  }
+  $cid = 'civicrm_gcb_' . $group_id;
+  $cached = cache_get($cid);
+  $result = is_object($cached) ? $cached->data : 0;
+  $expired = REQUEST_TIME - (60 * 60); // 60 minute expiry
+  if (!$result || $result != $current || $cached->created < $expired) {
+    civicrm_initialize();
+    $params = array(
+     'version' => '3',
+     'group' => $group_id,
+    );
+    $results = civicrm_api('Contact', 'getcount', $params);
+    // if (1 == $user->uid) { print_r($results); print_r($params); die(); }
+    if (is_array($results) && empty($results['is_error'])) { // in case of unexpected failure, we'll just return our cached value
+      $result = $results['result'];
+    }
+    elseif (is_numeric($results)) {
+      $result = $results;
+    }
+    if ($result) {
+      cache_set($cid, $result);
+      variable_set('civicrm_gcb_current_' . $group_id, $result);
+    }
+  }
+  return $result;
+}
+
+/*
+ * function civicrm_gcb_civicrm_groups()
+ * get a list of available groups
+ */
+function civicrm_gcb_civicrm_groups() {
+  civicrm_initialize();
+  $params = array(
+   'version' => '3',
+   'rowCount' => '0',
+  );
+  $results = civicrm_api('Group', 'get', $params);
+  if (is_array($results) && empty($results['is_error'])) { 
+    foreach($results['values'] as $group) {
+      $groups[$group['id']] = $group['title'];
+    }
+  }
+  return $groups;
+}
+
+/**
+ * Implement the CiviCRM postProcess hook to clear the cache after an edit takes place
+ */
+function civicrm_gcb_civicrm_postProcess($formName, &$form) {
+  if ('CRM_Profile_Form_Edit' == $formName) {
+    $counter_gid = variable_get('civicrm_gcb_id', 0);
+    $add_to_group_id = $form->_submitValues['add_to_group'];
+    if ($add_to_group_id == $counter_gid) {
+      _civicrm_gcb_increment($counter_gid);
+    }
+  }
+}
+
+/*
+Use this in some form to clear caches if necessary
+function civicrm_gcb_webform_submission_insert($node, $submission) {
+  if (function_exists('varnish_expire_cache')) {
+    varnish_expire_cache(array(url('node/'.$node->nid)));
+  }
+  if ($node->nid == 17399) {
+    _civicrm_gcb_increment(158);
+  }
+}
+*/
+
+function _civicrm_gcb_increment($counter_gid = 158) {
+  $current = 1 + variable_get('civicrm_gcb_current_' . $counter_gid, 0);
+  variable_set('civicrm_gcb_current_' . $counter_gid, $current);
+  cache_clear_all('civicrm_gcb:*','cache_block', TRUE);
+}

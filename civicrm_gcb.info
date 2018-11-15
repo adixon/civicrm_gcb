@@ -1,0 +1,6 @@
+; $Id$
+name = CiviCRM Group Counter Block
+description = Provides counter blocks for CiviCRM Groups
+dependencies[] = civicrm
+package = CiviCRM
+core = 7.x
